@@ -10,6 +10,35 @@ import torch.nn.functional as F
 import pdb
 
 
+class MAB(nn.Module):
+    def __init__(self, dim_Q, dim_K, dim_V, num_heads, ln=False):
+        super(MAB, self).__init__()
+        self.dim_V = dim_V
+        self.num_heads = num_heads
+        self.fc_q = nn.Linear(dim_Q, dim_V)
+        self.fc_k = nn.Linear(dim_K, dim_V)
+        self.fc_v = nn.Linear(dim_K, dim_V)
+        if ln:
+            self.ln0 = nn.LayerNorm(dim_V)
+            self.ln1 = nn.LayerNorm(dim_V)
+        self.fc_o = nn.Linear(dim_V, dim_V)
+
+    def forward(self, Q, K):
+        Q = self.fc_q(Q)
+        K, V = self.fc_k(K), self.fc_v(K)
+
+        dim_split = self.dim_V // self.num_heads
+        Q_ = torch.cat(Q.split(dim_split, 2), 0)
+        K_ = torch.cat(K.split(dim_split, 2), 0)
+        V_ = torch.cat(V.split(dim_split, 2), 0)
+
+        A = torch.softmax(Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.dim_V), 2)
+        O = torch.cat((Q_ + A.bmm(V_)).split(Q.size(0), 0), 2)
+        O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
+        O = O + F.relu(self.fc_o(O))
+        O = O if getattr(self, 'ln1', None) is None else self.ln1(O)
+        return O
+
 class PointerEncoder(nn.Module):
     """
     Encoder class for Pointer-Net
@@ -190,7 +219,7 @@ class PointerDecoder(nn.Module):
         :param Tensor context: Encoder's outputs
         :return: (Output probabilities, Pointers indices), last hidden state
         """
-
+        
         batch_size = embedded_inputs.size(0)
         input_length = embedded_inputs.size(1)
 
@@ -202,7 +231,8 @@ class PointerDecoder(nn.Module):
         runner = self.runner.repeat(input_length)
         for i in range(input_length):
             runner.data[i] = i
-        runner = runner.unsqueeze(0).expand(batch_size, -1).long()
+        runner = runner.unsqueeze(0).expand(batch_size, -1).long() #[B,L]:[0,1,2...]
+       
 
         outputs = []
         pointers = []
@@ -210,21 +240,19 @@ class PointerDecoder(nn.Module):
         def step(x, hidden):
             """
             Recurrence step function
-            :param Tensor x: Input at time t
-            :param tuple(Tensor, Tensor) hidden: Hidden states at time t-1
+            :param Tensor x: Input at time t   [batch, embedding]
+            :param tuple(Tensor, Tensor) hidden: Hidden states at time t-1  ([batch, hidden], [batch, hidden])
             :return: Hidden states at time t (h, c), Attention probabilities (Alpha)
             """
 
-            # Regular LSTM
-            # x: (batch, embedding)
-            # hidden: ((batch, hidden),
-            #          (batch, hidden))
-            h, c = hidden
+            h, c = hidden  
 
-            # gates: (batch, hidden * 4)
+            # gates: (batch, hidden * 4)  
+            # 将输入x和隐藏状态h进行线性变换，得到gates
             gates = self.input_to_hidden(x) + self.hidden_to_hidden(h)
 
             # input, forget, cell, out: (batch, hidden)
+            # 将gates分成4个部分，每个部分的大小为hidden
             input, forget, cell, out = gates.chunk(4, 1)
 
             input = torch.sigmoid(input)
@@ -232,9 +260,9 @@ class PointerDecoder(nn.Module):
             cell = torch.tanh(cell)
             out = torch.sigmoid(out)
 
-            c_t = (forget * c) + (input * cell)
-            h_t = out * torch.tanh(c_t)
-
+            c_t = (forget * c) + (input * cell)  #[batch, hidden]
+            h_t = out * torch.tanh(c_t)  #[batch, hidden] 
+ 
             # Attention section
             # h_t: (batch, hidden)
             # context: (batch, seq_len, hidden)
@@ -249,10 +277,14 @@ class PointerDecoder(nn.Module):
         output_length = input_length
         if self.output_length:
             output_length = self.output_length
+        
         for _ in range(output_length):
-            # decoder_input: (batch, embedding)
-            # hidden: ((batch, hidden),
-            #          (batch, hidden))
+
+            """
+            :param Tensor decoder_input: 初始化的decoder 输入
+            :param tuple(Tensor, Tensor) hidden: decoder 隐藏状态(encoder最后一个隐藏状态)
+            :return: 
+            """
             h_t, c_t, outs = step(decoder_input, hidden)
             hidden = (h_t, c_t)
 
@@ -277,9 +309,8 @@ class PointerDecoder(nn.Module):
             # UserWarning: indexing with dtype torch.uint8 is now deprecated,
             # please use a dtype torch.bool instead.
             embedding_mask = embedding_mask.bool()
-
-            decoder_input = embedded_inputs[embedding_mask.data].view(
-                batch_size, self.embedding_dim)
+            pdb.set_trace()
+            decoder_input = embedded_inputs[embedding_mask.data].view(batch_size, self.embedding_dim)
 
             outputs.append(outs.unsqueeze(0))
             pointers.append(indices.unsqueeze(1))
@@ -324,6 +355,9 @@ class PointerNetwork(nn.Module):
         self.output_length = output_length
         self.embedding_by_dict = embedding_by_dict
         self.embedding_by_dict_size = embedding_by_dict_size
+
+        self.MAB = nn.MultiheadAttention(embedding_dim,1,dropout=dropout,batch_first=True)
+
         if embedding_by_dict:
             self.embedding = nn.Embedding(embedding_by_dict_size,
                                           embedding_dim)
@@ -365,8 +399,20 @@ class PointerNetwork(nn.Module):
             input = input.long()
         else:
             input = input.float()
+        
         embedded_inputs = self.embedding(input).view(batch_size,
                                                      input_length, -1)
+        
+       
+        embedded_inputs, _ = self.MAB(
+            query=embedded_inputs,
+            key=embedded_inputs,
+            value=embedded_inputs,
+            need_weights=False,
+            attn_mask=None
+        )
+       
+      
 
         # encoder_hidden0: [(num_lstms, batch_size,  hidden),
         #                   (num_lstms, batch_size,  hidden]
@@ -394,7 +440,7 @@ class PointerNetwork(nn.Module):
             #                   (batch, hidden))
             decoder_hidden0 = (encoder_hidden[0][-1],
                                encoder_hidden[1][-1])
-        (outputs, pointers), decoder_hidden = self.decoder(embedded_inputs,
+        (outputs, pointers), decoder_hidden = self.decoder(embedded_inputs,  
                                                            decoder_input0,
                                                            decoder_hidden0,
                                                            encoder_outputs)

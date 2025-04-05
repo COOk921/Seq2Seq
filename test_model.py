@@ -6,15 +6,18 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 from evaluate import evaluate_accuracy, evaluate_pmr, evaluate_tau
 from utils.optim import build_optimizer
+from utils.loss import binary_listNet,sorting_loss
 import math
 import pdb
 
 def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device):
 
+    
 
     criterion = nn.CrossEntropyLoss().to(device)
-    num_training_steps = epochs * len(train_dataloader)
-    optimizer, scheduler = build_optimizer(model, num_training_steps)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # 使用学习率调度器
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
 
     best_acc = 0
     best_epoch = 0
@@ -27,12 +30,16 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
-          
+            
+            # 使用自定义排序损失函数
+            #loss = sorting_loss(pointers, label).requires_grad_(True)
+            
             loss = criterion(outputs, label)
             optimizer.zero_grad()
             loss.backward()
+            # 梯度裁剪，防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            scheduler.step()
 
             epoch_loss += loss.item()
         print(f"Epoch {epoch+1} loss: {epoch_loss/len(train_dataloader)}")
@@ -86,7 +93,7 @@ if __name__ == "__main__":
     
     epochs = 30
     lr = 1e-4
-    data_size = 50
+    data_size = 20
     dim = math.ceil(math.log2(data_size))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
@@ -94,9 +101,9 @@ if __name__ == "__main__":
     model = PointerNetwork(
         elem_dims = dim,      #初始输入维度
         embedding_dim=256,  # 增加嵌入维度
-        hidden_dim= 16,   # 增加LSTM的维度
+        hidden_dim= 128,   # 增加LSTM的维度
         lstm_layers=1,    # 增加LSTM层数
-        dropout=0.2,  
+        dropout=0.1,  
         bidir=False,  # 使用双向LSTM
         masking=True,
         # output_length=30,
@@ -105,12 +112,13 @@ if __name__ == "__main__":
     train_dataset = SortingDataset(size=data_size, num_samples=500,seed=42)
     test_dataset = SortingDataset(size=data_size, num_samples=100,seed=42)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
     test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
 
     train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
 
     # model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
     # test_model(model, test_dataloader, data_size)
+
+    torch.cuda.empty_cache()
     
