@@ -31,9 +31,6 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
             
-            # 使用自定义排序损失函数
-            #loss = sorting_loss(pointers, label).requires_grad_(True)
-            
             loss = criterion(outputs, label)
             optimizer.zero_grad()
             loss.backward()
@@ -100,10 +97,10 @@ if __name__ == "__main__":
     print(f"data_size: {data_size}, dim: {dim}")
     model = PointerNetwork(
         elem_dims = dim,      #初始输入维度
-        embedding_dim=256,  # 增加嵌入维度
-        hidden_dim= 128,   # 增加LSTM的维度
+        embedding_dim=512,  # 增加嵌入维度
+        hidden_dim= 512,   # 增加LSTM的维度
         lstm_layers=1,    # 增加LSTM层数
-        dropout=0.1,  
+        dropout=0.2,  
         bidir=False,  # 使用双向LSTM
         masking=True,
         # output_length=30,
@@ -113,7 +110,7 @@ if __name__ == "__main__":
     test_dataset = SortingDataset(size=data_size, num_samples=100,seed=42)
 
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=132, shuffle=False)
 
     train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
 

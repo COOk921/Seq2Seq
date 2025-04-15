@@ -248,21 +248,20 @@ class PointerDecoder(nn.Module):
             h, c = hidden  
 
             # gates: (batch, hidden * 4)  
-            # 将输入x和隐藏状态h进行线性变换，得到gates
             gates = self.input_to_hidden(x) + self.hidden_to_hidden(h)
 
             # input, forget, cell, out: (batch, hidden)
-            # 将gates分成4个部分，每个部分的大小为hidden
             input, forget, cell, out = gates.chunk(4, 1)
 
-            input = torch.sigmoid(input)
-            forget = torch.sigmoid(forget)
-            cell = torch.tanh(cell)
-            out = torch.sigmoid(out)
+            input = torch.sigmoid(input)    #输入门
+            forget = torch.sigmoid(forget)  # 遗忘门
+            cell = torch.tanh(cell)         #候选细胞状态
+            out = torch.sigmoid(out)        #输出门
 
             c_t = (forget * c) + (input * cell)  #[batch, hidden]
             h_t = out * torch.tanh(c_t)  #[batch, hidden] 
  
+
             # Attention section
             # h_t: (batch, hidden)
             # context: (batch, seq_len, hidden)
@@ -278,13 +277,14 @@ class PointerDecoder(nn.Module):
         if self.output_length:
             output_length = self.output_length
         
+ 
         for _ in range(output_length):
-
             """
             :param Tensor decoder_input: 初始化的decoder 输入
             :param tuple(Tensor, Tensor) hidden: decoder 隐藏状态(encoder最后一个隐藏状态)
             :return: 
             """
+            
             h_t, c_t, outs = step(decoder_input, hidden)
             hidden = (h_t, c_t)
 
@@ -309,7 +309,8 @@ class PointerDecoder(nn.Module):
             # UserWarning: indexing with dtype torch.uint8 is now deprecated,
             # please use a dtype torch.bool instead.
             embedding_mask = embedding_mask.bool()
-            pdb.set_trace()
+
+            # 根据embedding_mask选择embedded_inputs中对应的元素
             decoder_input = embedded_inputs[embedding_mask.data].view(batch_size, self.embedding_dim)
 
             outputs.append(outs.unsqueeze(0))
@@ -356,13 +357,13 @@ class PointerNetwork(nn.Module):
         self.embedding_by_dict = embedding_by_dict
         self.embedding_by_dict_size = embedding_by_dict_size
 
-        self.MAB = nn.MultiheadAttention(embedding_dim,1,dropout=dropout,batch_first=True)
+        self.MAB = nn.MultiheadAttention(embedding_dim,num_heads=4,dropout=dropout,batch_first=True)
 
-        if embedding_by_dict:
-            self.embedding = nn.Embedding(embedding_by_dict_size,
-                                          embedding_dim)
+        if embedding_by_dict:                   
+            self.embedding = nn.Embedding(embedding_by_dict_size, embedding_dim)
         else:
             self.embedding = nn.Linear(elem_dims, embedding_dim)
+
         self.encoder = PointerEncoder(embedding_dim,
                                       hidden_dim,
                                       lstm_layers,
@@ -400,11 +401,9 @@ class PointerNetwork(nn.Module):
         else:
             input = input.float()
         
-        embedded_inputs = self.embedding(input).view(batch_size,
-                                                     input_length, -1)
-        
-       
-        embedded_inputs, _ = self.MAB(
+        # [B*L,D] -> [B,L,hid_dim]
+        embedded_inputs = self.embedding(input).view(batch_size, input_length, -1)
+        encoder_outputs, _ = self.MAB(
             query=embedded_inputs,
             key=embedded_inputs,
             value=embedded_inputs,
@@ -412,20 +411,10 @@ class PointerNetwork(nn.Module):
             attn_mask=None
         )
        
-      
-
-        # encoder_hidden0: [(num_lstms, batch_size,  hidden),
-        #                   (num_lstms, batch_size,  hidden]
-        # where the length depends on number of lstms & bidir
+        # 初始化hidden,并使用LSTM进行编码
         encoder_hidden0 = self.encoder.init_hidden(embedded_inputs)
-
-        # encoder_outputs: (batch_size, seq_len, hidden)
-        # encoder_hidden: [(num_lstms, batch_size, hidden),
-        #                  (num_lstms, batch_size, hidden]
-        # where the length depends on number of lstms & bidir
-        encoder_outputs, encoder_hidden = self.encoder(embedded_inputs,
+        lstm_encoder_outputs, encoder_hidden = self.encoder(embedded_inputs,
                                                        encoder_hidden0)
-
         if self.bidir:
             # last layer's h and c only, concatenated
             decoder_hidden0 = (
@@ -440,9 +429,24 @@ class PointerNetwork(nn.Module):
             #                   (batch, hidden))
             decoder_hidden0 = (encoder_hidden[0][-1],
                                encoder_hidden[1][-1])
-        (outputs, pointers), decoder_hidden = self.decoder(embedded_inputs,  
+
+       
+       
+
+        # 随机初始化input0和hidden0,测试对性能的影响
+        # 
+        hidden_dim = embedded_inputs.size(2)
+        device = embedded_inputs.device
+        dtype = embedded_inputs.dtype
+        #decoder_input0 = torch.randn(batch_size, self.embedding_dim,device=h.device,dtype=h.dtype)
+
+        decoder_hidden0 = (torch.randn(batch_size, hidden_dim,device=device,dtype=dtype), 
+                            torch.randn(batch_size, hidden_dim,device=device,dtype=dtype))
+
+
+        (outputs, pointers), decoder_hidden = self.decoder( embedded_inputs,  
                                                            decoder_input0,
                                                            decoder_hidden0,
-                                                           encoder_outputs)
+                                                            encoder_outputs)
 
         return outputs, pointers
