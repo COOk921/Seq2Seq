@@ -185,7 +185,8 @@ class PointerDecoder(nn.Module):
 
     def __init__(self, embedding_dim,
                  hidden_dim, masking=True,
-                 output_length=None):
+                 output_length=None,
+                 dropout=0.2):
         """
         Initiate Decoder
         :param int embedding_dim: Number of embeddings in Pointer-Net
@@ -202,6 +203,7 @@ class PointerDecoder(nn.Module):
         self.hidden_to_hidden = nn.Linear(hidden_dim, 4 * hidden_dim)
         self.hidden_out = nn.Linear(hidden_dim * 2, hidden_dim)
         self.att = PointerAttention(hidden_dim, hidden_dim)
+        self.MAB = nn.MultiheadAttention(hidden_dim,num_heads=1,batch_first=True)
 
         # Used for propagating .cuda() command
         self.mask = Parameter(torch.ones(1), requires_grad=False)
@@ -240,13 +242,14 @@ class PointerDecoder(nn.Module):
         def step(x, hidden):
             """
             Recurrence step function
-            :param Tensor x: Input at time t   [batch, embedding]
-            :param tuple(Tensor, Tensor) hidden: Hidden states at time t-1  ([batch, hidden], [batch, hidden])
-            :return: Hidden states at time t (h, c), Attention probabilities (Alpha)
+            :param Tensor x: t 时刻的输入   [batch, embedding]
+            :param tuple(Tensor, Tensor) hidden: t-1 时刻的隐藏状态 ([batch, hidden], [batch, hidden])
+            :return: t 时刻的隐藏状态 (h, c), Attention probabilities (Alpha)
             """
 
+           
+            # 使用LSTM计算t时刻的隐藏状态
             h, c = hidden  
-
             # gates: (batch, hidden * 4)  
             gates = self.input_to_hidden(x) + self.hidden_to_hidden(h)
 
@@ -260,17 +263,35 @@ class PointerDecoder(nn.Module):
 
             c_t = (forget * c) + (input * cell)  #[batch, hidden]
             h_t = out * torch.tanh(c_t)  #[batch, hidden] 
- 
-
-            # Attention section
-            # h_t: (batch, hidden)
-            # context: (batch, seq_len, hidden)
-            # mask: (batch, seq_len)
+            
+            """
+            h_t = x.unsqueeze(1)
+          
+            # 使用MHA计算t时刻的隐藏状态 
+            h_t, output = self.MAB(
+                query=h_t,
+                key=context,
+                value=context,
+               
+            )
+            output = output.squeeze(1)
+            return h_t, output
+            """
+        
+           
+            """
+            计算注意力：
+            :param Tensor h_t: t 时刻的隐藏状态
+            :param Tensor context: encoder输出 
+            :param Tensor mask: 掩码
+            :return: t 时刻的隐藏状态, Attention probabilities (Alpha)
+            """
             hidden_t, output = self.att(h_t, context, torch.eq(mask, 0))
             hidden_t = torch.tanh(
                 self.hidden_out(torch.cat((hidden_t, h_t), 1)))
-
+        
             return hidden_t, c_t, output
+            
 
         # Recurrence loop
         output_length = input_length
@@ -287,34 +308,50 @@ class PointerDecoder(nn.Module):
             
             h_t, c_t, outs = step(decoder_input, hidden)
             hidden = (h_t, c_t)
-
+            # h_t, outs = step(decoder_input, hidden)
+            # hidden = h_t
+            
+           
             # Masking selected inputs
             masked_outs = outs * mask
 
             # Get maximum probabilities and indices
             max_probs, indices = masked_outs.max(1)
-            one_hot_pointers = (runner == indices.unsqueeze(1).expand(-1,
-                                                                      outs.size()[
-                                                                          1])).float()
+
+            #[B,L]; value = 1 means the pointer is selected at t-th step
+            one_hot_pointers = (runner == indices.unsqueeze(1).expand(-1,outs.size()[1])).float()
 
             # Update mask to ignore seen indices, if masking is enabled
             if self.masking:
                 mask = mask * (1 - one_hot_pointers)
 
-            # Get embedded inputs by max indices
-            embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1,
-                                                                  self.embedding_dim).byte()
+            # Get embedded mask at t-th step; [B,L,D]; value = 1 means the pointer is selected at t-th step
+            embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1,self.embedding_dim).byte()
 
-            # Below line aims to fixes:
-            # UserWarning: indexing with dtype torch.uint8 is now deprecated,
-            # please use a dtype torch.bool instead.
             embedding_mask = embedding_mask.bool()
 
-            # 根据embedding_mask选择embedded_inputs中对应的元素
-            decoder_input = embedded_inputs[embedding_mask.data].view(batch_size, self.embedding_dim)
+            # [B,D] ; T-th step's input 这里的为下一时刻的输入
+            next_t_embed = embedded_inputs[embedding_mask.data].view(batch_size, self.embedding_dim)
+            
+            # not selected embedding
+            no_select_mask = mask.unsqueeze(2).expand(-1, -1,self.embedding_dim).byte()
+            no_select_mask = no_select_mask.bool()
+            no_selected_emd = embedded_inputs[no_select_mask.data].view(batch_size, -1, self.embedding_dim)
+            # 这里表示没有选择节点的embedding,使用最大池化
+            if no_selected_emd.size(1) > 0:
+                # 池化
+                not_select_embed = F.max_pool1d(no_selected_emd.transpose(1,2),kernel_size=no_selected_emd.size(1)).squeeze(-1)
+            else:
+                not_select_embed = torch.zeros(batch_size, self.embedding_dim).to(embedded_inputs.device)
+            
+           
+            decoder_input = not_select_embed
+
+            #pdb.set_trace()
 
             outputs.append(outs.unsqueeze(0))
             pointers.append(indices.unsqueeze(1))
+
 
         outputs = torch.cat(outputs).permute(1, 0, 2)
         pointers = torch.cat(pointers, 1)
@@ -410,7 +447,7 @@ class PointerNetwork(nn.Module):
             need_weights=False,
             attn_mask=None
         )
-       
+        """
         # 初始化hidden,并使用LSTM进行编码
         encoder_hidden0 = self.encoder.init_hidden(embedded_inputs)
         lstm_encoder_outputs, encoder_hidden = self.encoder(embedded_inputs,
@@ -429,7 +466,7 @@ class PointerNetwork(nn.Module):
             #                   (batch, hidden))
             decoder_hidden0 = (encoder_hidden[0][-1],
                                encoder_hidden[1][-1])
-
+        """
        
        
 
