@@ -11,33 +11,63 @@ import pdb
 
 
 class MAB(nn.Module):
-    def __init__(self, dim_Q, dim_K, dim_V, num_heads, ln=False):
+    def __init__(self, d_model=512, n_heads=2, d_k=64, d_v=64):
         super(MAB, self).__init__()
-        self.dim_V = dim_V
-        self.num_heads = num_heads
-        self.fc_q = nn.Linear(dim_Q, dim_V)
-        self.fc_k = nn.Linear(dim_K, dim_V)
-        self.fc_v = nn.Linear(dim_K, dim_V)
-        if ln:
-            self.ln0 = nn.LayerNorm(dim_V)
-            self.ln1 = nn.LayerNorm(dim_V)
-        self.fc_o = nn.Linear(dim_V, dim_V)
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_k
+        self.d_v = d_v
+        
+        # 定义线性变换层
+        self.W_q = nn.Linear(d_model, n_heads * d_k)
+        self.W_k = nn.Linear(d_model, n_heads * d_k)
+        self.W_v = nn.Linear(d_model, n_heads * d_v)
+        self.W_o = nn.Linear(n_heads * d_v, d_model)
+        
+        # 缩放因子
+        self.scale = math.sqrt(d_k)
 
-    def forward(self, Q, K):
-        Q = self.fc_q(Q)
-        K, V = self.fc_k(K), self.fc_v(K)
-
-        dim_split = self.dim_V // self.num_heads
-        Q_ = torch.cat(Q.split(dim_split, 2), 0)
-        K_ = torch.cat(K.split(dim_split, 2), 0)
-        V_ = torch.cat(V.split(dim_split, 2), 0)
-
-        A = torch.softmax(Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.dim_V), 2)
-        O = torch.cat((Q_ + A.bmm(V_)).split(Q.size(0), 0), 2)
-        O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
-        O = O + F.relu(self.fc_o(O))
-        O = O if getattr(self, 'ln1', None) is None else self.ln1(O)
-        return O
+    def forward(self, Q, K, V, mask):
+        """
+        :param Tensor Q: Query [B,1,D]
+        :param Tensor K: Key [B,L,D]
+        :param Tensor V: Value [B,L,D]
+        :param ByteTensor mask: [B,L]
+        :return: Output [B,1,D], Attention weights [B,L,L]
+        """
+        batch_size = Q.size(0)
+        
+        # 线性变换并分头
+        Q = self.W_q(Q).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # [B,h,1,d_k]
+        K = self.W_k(K).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # [B,h,L,d_k]
+        V = self.W_v(V).view(batch_size, -1, self.n_heads, self.d_v).transpose(1, 2)  # [B,h,L,d_v]
+        
+        # 计算注意力分数
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # [B,h,1,L]
+        
+        
+        # 扩展mask维度以匹配scores
+        if mask is not None:
+            mask = mask.unsqueeze(1).unsqueeze(2)  # [B,h,1,L]
+            scores = scores.masked_fill(mask, -1e9)
+        
+        
+        # 计算注意力权重
+        attn = F.softmax(scores, dim=-1)  # [B,h,1,L]
+        
+        # 计算输出
+        output = torch.matmul(attn, V)  # [B,h,1,d_v]
+        output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.n_heads * self.d_v)  # [B,1,h*d_v]
+        output = self.W_o(output).squeeze(1)
+        
+        attn = attn.squeeze()  
+       
+        return output, attn
+        
+        
+        
+       
+        
 
 class PointerEncoder(nn.Module):
     """
@@ -203,7 +233,7 @@ class PointerDecoder(nn.Module):
         self.hidden_to_hidden = nn.Linear(hidden_dim, 4 * hidden_dim)
         self.hidden_out = nn.Linear(hidden_dim * 2, hidden_dim)
         self.att = PointerAttention(hidden_dim, hidden_dim)
-        self.MAB = nn.MultiheadAttention(hidden_dim,num_heads=1,batch_first=True)
+        self.MAB = MAB(d_model=hidden_dim, n_heads=1, d_k=256, d_v=256)
 
         # Used for propagating .cuda() command
         self.mask = Parameter(torch.ones(1), requires_grad=False)
@@ -239,7 +269,7 @@ class PointerDecoder(nn.Module):
         outputs = []
         pointers = []
 
-        def step(x, hidden):
+        def step_lstm(x, hidden):
             """
             Recurrence step function
             :param Tensor x: t 时刻的输入   [batch, embedding]
@@ -247,7 +277,6 @@ class PointerDecoder(nn.Module):
             :return: t 时刻的隐藏状态 (h, c), Attention probabilities (Alpha)
             """
 
-           
             # 使用LSTM计算t时刻的隐藏状态
             h, c = hidden  
             # gates: (batch, hidden * 4)  
@@ -262,43 +291,32 @@ class PointerDecoder(nn.Module):
             out = torch.sigmoid(out)        #输出门
 
             c_t = (forget * c) + (input * cell)  #[batch, hidden]
-            h_t = out * torch.tanh(c_t)  #[batch, hidden] 
+            h_t = out * torch.tanh(c_t)  #[batch, hidden]
+            hidden_t, output = self.att(h_t, context, torch.eq(mask, 0))
+            hidden_t = torch.tanh(self.hidden_out(torch.cat((hidden_t, h_t), 1)))
+        
+            return hidden_t, c_t, output 
             
-            """
+        def step_mha(x):
+
             h_t = x.unsqueeze(1)
-          
             # 使用MHA计算t时刻的隐藏状态 
             h_t, output = self.MAB(
-                query=h_t,
-                key=context,
-                value=context,
-               
+                Q=h_t,
+                K=context,
+                V=context,
+                mask=torch.eq(mask, 0)
             )
             output = output.squeeze(1)
-            return h_t, output
-            """
-        
+            return  output
            
-            """
-            计算注意力：
-            :param Tensor h_t: t 时刻的隐藏状态
-            :param Tensor context: encoder输出 
-            :param Tensor mask: 掩码
-            :return: t 时刻的隐藏状态, Attention probabilities (Alpha)
-            """
-            hidden_t, output = self.att(h_t, context, torch.eq(mask, 0))
-            hidden_t = torch.tanh(
-                self.hidden_out(torch.cat((hidden_t, h_t), 1)))
-        
-            return hidden_t, c_t, output
-            
+    
 
         # Recurrence loop
         output_length = input_length
         if self.output_length:
             output_length = self.output_length
-        
- 
+    
         for _ in range(output_length):
             """
             :param Tensor decoder_input: 初始化的decoder 输入
@@ -306,10 +324,9 @@ class PointerDecoder(nn.Module):
             :return: 
             """
             
-            h_t, c_t, outs = step(decoder_input, hidden)
-            hidden = (h_t, c_t)
-            # h_t, outs = step(decoder_input, hidden)
-            # hidden = h_t
+            # h_t, c_t, outs = step_lstm(decoder_input, hidden)
+            # hidden = (h_t, c_t)
+            outs = step_mha(decoder_input)
             
            
             # Masking selected inputs
@@ -333,7 +350,7 @@ class PointerDecoder(nn.Module):
             # [B,D] ; T-th step's input 这里的为下一时刻的输入
             next_t_embed = embedded_inputs[embedding_mask.data].view(batch_size, self.embedding_dim)
             
-            # not selected embedding
+            """ 没有选中节点的embedding"""
             no_select_mask = mask.unsqueeze(2).expand(-1, -1,self.embedding_dim).byte()
             no_select_mask = no_select_mask.bool()
             no_selected_emd = embedded_inputs[no_select_mask.data].view(batch_size, -1, self.embedding_dim)
@@ -344,10 +361,8 @@ class PointerDecoder(nn.Module):
             else:
                 not_select_embed = torch.zeros(batch_size, self.embedding_dim).to(embedded_inputs.device)
             
-           
-            decoder_input = not_select_embed
-
-            #pdb.set_trace()
+          
+            decoder_input = not_select_embed 
 
             outputs.append(outs.unsqueeze(0))
             pointers.append(indices.unsqueeze(1))
