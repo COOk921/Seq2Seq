@@ -464,15 +464,15 @@ class PointerNetwork(nn.Module):
         #embedded_inputs1, mask, count = grouping(embedded_inputs, mask.to(embedded_inputs.device))
         """
         """ 使用ISAB """
-        encoder_outputs = self.ISAB(embedded_inputs)
+        #encoder_outputs = self.ISAB(embedded_inputs)
        
-        # encoder_outputs, _ = self.MAB(
-        #     query=embedded_inputs,
-        #     key=embedded_inputs,
-        #     value=embedded_inputs,
-        #     need_weights=False,
-        #     attn_mask=None
-        # )
+        encoder_outputs, _ = self.MAB(
+            query=embedded_inputs,
+            key=embedded_inputs,
+            value=embedded_inputs,
+            need_weights=False,
+            attn_mask=None
+        )
 
   
 
