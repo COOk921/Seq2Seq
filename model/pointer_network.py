@@ -7,6 +7,8 @@ from torch.nn import Parameter
 from torch.autograd import Variable
 import torch.nn.functional as F
 
+from utils.grouping import grouping
+from model.ISAB import ISAB
 import pdb
 
 
@@ -64,11 +66,6 @@ class MAB(nn.Module):
        
         return output, attn
         
-        
-        
-       
-        
-
 class PointerEncoder(nn.Module):
     """
     Encoder class for Pointer-Net
@@ -136,7 +133,6 @@ class PointerEncoder(nn.Module):
                                                       self.hidden_dim)
 
         return h0, c0
-
 
 class PointerAttention(nn.Module):
     """
@@ -298,7 +294,6 @@ class PointerDecoder(nn.Module):
             return hidden_t, c_t, output 
             
         def step_mha(x):
-
             h_t = x.unsqueeze(1)
             # 使用MHA计算t时刻的隐藏状态 
             h_t, output = self.MAB(
@@ -365,14 +360,15 @@ class PointerDecoder(nn.Module):
             decoder_input = not_select_embed 
 
             outputs.append(outs.unsqueeze(0))
-            pointers.append(indices.unsqueeze(1))
+            pointers.append(indices.unsqueeze(1))  #indices 为当前t时刻的输出，[B,1]
+        
+       
 
 
         outputs = torch.cat(outputs).permute(1, 0, 2)
         pointers = torch.cat(pointers, 1)
 
         return (outputs, pointers), hidden
-
 
 class PointerNetwork(nn.Module):
     """
@@ -410,7 +406,8 @@ class PointerNetwork(nn.Module):
         self.embedding_by_dict_size = embedding_by_dict_size
 
         self.MAB = nn.MultiheadAttention(embedding_dim,num_heads=4,dropout=dropout,batch_first=True)
-
+        self.ISAB = ISAB(embedding_dim, embedding_dim, 1, 1)
+        
         if embedding_by_dict:                   
             self.embedding = nn.Embedding(embedding_by_dict_size, embedding_dim)
         else:
@@ -426,6 +423,7 @@ class PointerNetwork(nn.Module):
                                       output_length=self.output_length)
         self.decoder_input0 = Parameter(torch.FloatTensor(embedding_dim),
                                         requires_grad=False)
+     
 
         # Initialize decoder_input0
         nn.init.uniform_(self.decoder_input0, -1, 1)
@@ -443,7 +441,7 @@ class PointerNetwork(nn.Module):
 
         # decoder_input0: (batch,  embedding)
         decoder_input0 = self.decoder_input0.unsqueeze(0).expand(batch_size, -1)
-
+       
         # inputs: (batch * seq_len, elem_dim)
         input = inputs.view(batch_size * input_length, -1)
 
@@ -455,13 +453,29 @@ class PointerNetwork(nn.Module):
         
         # [B*L,D] -> [B,L,hid_dim]
         embedded_inputs = self.embedding(input).view(batch_size, input_length, -1)
-        encoder_outputs, _ = self.MAB(
-            query=embedded_inputs,
-            key=embedded_inputs,
-            value=embedded_inputs,
-            need_weights=False,
-            attn_mask=None
-        )
+
+        
+        """
+        K-means聚类
+        :param Tensor embedded_inputs: 输入序列
+        :param Tensor mask: 掩码
+
+        mask = torch.zeros(batch_size, input_length).bool()
+        #embedded_inputs1, mask, count = grouping(embedded_inputs, mask.to(embedded_inputs.device))
+        """
+        """ 使用ISAB """
+        encoder_outputs = self.ISAB(embedded_inputs)
+       
+        # encoder_outputs, _ = self.MAB(
+        #     query=embedded_inputs,
+        #     key=embedded_inputs,
+        #     value=embedded_inputs,
+        #     need_weights=False,
+        #     attn_mask=None
+        # )
+
+  
+
         """
         # 初始化hidden,并使用LSTM进行编码
         encoder_hidden0 = self.encoder.init_hidden(embedded_inputs)

@@ -12,8 +12,6 @@ import pdb
 
 def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device):
 
-    
-
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     # 使用学习率调度器
@@ -30,7 +28,8 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
-            
+
+            #pdb.set_trace()
             loss = criterion(outputs, label)
             optimizer.zero_grad()
             loss.backward()
@@ -90,7 +89,7 @@ if __name__ == "__main__":
     
     epochs = 30
     lr = 1e-4
-    data_size = 32
+    data_size = 50
     dim = math.ceil(math.log2(data_size))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
@@ -103,14 +102,14 @@ if __name__ == "__main__":
         dropout=0.2,  
         bidir=False,  # 使用双向LSTM
         masking=True,
-        # output_length=30,
+        output_length=data_size,
     ).to(device)
 
-    train_dataset = SortingDataset(size=data_size, num_samples=500,seed=42)
-    test_dataset = SortingDataset(size=data_size, num_samples=100,seed=42)
+    train_dataset = SortingDataset(size=data_size, num_samples=300,seed=4412)
+    test_dataset = SortingDataset(size=data_size, num_samples=10,seed=4412)
 
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
-    test_dataloader = DataLoader(test_dataset, batch_size=132, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
     train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
 
