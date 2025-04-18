@@ -7,7 +7,7 @@ import math
 from data.process import deal_container_data
 
 class ContainerDataset(Dataset):
-    def __init__(self,size = 8, seed = 1234):
+    def __init__(self,size = 8, type = 'train', seed = 1234):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.data = deal_container_data()
         self.data = self.data.to(device)
@@ -21,7 +21,13 @@ class ContainerDataset(Dataset):
         
         torch.manual_seed(seed)
         self.data = self.data[:, torch.randperm(self.data.size(1)), :]
-        
+
+        # 8:2
+        length = int(self.num_samples * 0.8) 
+        if type == 'train':
+            self.data = self.data[:length,:,:]
+        else:
+            self.data = self.data[length:,:,:]
         
         self.label = self.data[:,:,-1]
         self.input = self.data[:,:,:-1]
@@ -29,12 +35,8 @@ class ContainerDataset(Dataset):
         self.label = torch.argsort(self.label, dim=-1)
 
 
-        print("样本数量:",self.num_samples)
-        print("输入特征[B,L,D]:",self.input.shape)
-        
-
     def __len__(self):
-        return self.num_samples
+        return self.data.shape[0]
 
     def __getitem__(self, idx):
 

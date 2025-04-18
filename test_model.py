@@ -62,6 +62,10 @@ def test_model(model, test_dataloader,data_size):
             label = batch['label'].squeeze(-1).long()
             
             output, pointer = model(input)
+            criterion = nn.CrossEntropyLoss().to(device)
+            loss = criterion(output, label)
+            pdb.set_trace()
+
             all_outputs.append(pointer)
             all_labels.append(label)
 
@@ -89,7 +93,7 @@ if __name__ == "__main__":
     
     epochs = 30
     lr = 1e-4
-    data_size = 8
+    data_size = 30
     dim = math.ceil(math.log2(data_size))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
@@ -111,10 +115,10 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
     test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
-    train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
+    #train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
 
-    # model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
-    # test_model(model, test_dataloader, data_size)
+    model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
+    test_model(model, test_dataloader, data_size)
 
     torch.cuda.empty_cache()
     

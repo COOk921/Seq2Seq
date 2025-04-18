@@ -20,8 +20,8 @@ def read_excel(file_path,sheet_name):
 
 def deal_container_data():
 
-    file_path = 'data/containers/data.xlsx'
-    data = read_excel(file_path,sheet_name='Sheet1')
+    file_path = 'data/containers/DSCH.xlsx'
+    data = read_excel(file_path,sheet_name='Sheet2')
     # del 特征
     del_features = ['Time Completed',
                     'Unit Nbr',
@@ -37,7 +37,6 @@ def deal_container_data():
                         'Unit Type Length',
                         'WI POW',
                         ]
-   
 
     # 连续特征
     continuous_features = ['Unit Weight (kg)']

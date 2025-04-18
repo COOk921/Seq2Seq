@@ -2,17 +2,22 @@ import torch
 import torch.nn as nn
 from model.pointer_network import PointerNetwork
 from data.container_dataset import ContainerDataset
+from data.tsp import TSPDataset
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from evaluate import evaluate_accuracy, evaluate_pmr, evaluate_tau
 from utils.optim import build_optimizer
 from utils.loss import binary_listNet,sorting_loss
+from utils.show_tsp import show_tsp_data
+
 import math
 import pdb
+
 
 def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device):
 
     criterion = nn.CrossEntropyLoss().to(device)
+
     optimizer = optim.Adam(model.parameters(), lr=lr)
     # 使用学习率调度器
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
@@ -31,6 +36,7 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
 
             #pdb.set_trace()
             loss = criterion(outputs, label)
+            
             optimizer.zero_grad()
             loss.backward()
             # 梯度裁剪，防止梯度爆炸
@@ -60,8 +66,10 @@ def test_model(model, test_dataloader,data_size):
         with torch.no_grad():
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
-            
             output, pointer = model(input)
+            # show_tsp_data(input[0],pointer[0])
+            # show_tsp_data(input[0],label[0]) 
+            # pdb.set_trace()
             all_outputs.append(pointer)
             all_labels.append(label)
 
@@ -87,9 +95,9 @@ def load_model(model,checkpoint_path):
 
 if __name__ == "__main__":
     
-    epochs = 30
-    lr = 1e-4
-    data_size = 10
+    epochs = 100
+    lr = 1e-6
+    data_size = 10  #15个城市需要排序
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
     model = PointerNetwork(
@@ -97,17 +105,17 @@ if __name__ == "__main__":
         embedding_dim=512,  # 增加嵌入维度
         hidden_dim= 512,   # 增加LSTM的维度
         lstm_layers=1,    # 增加LSTM层数
-        dropout=0.2,  
+        dropout=0.3,  
         bidir=False,  # 使用双向LSTM
         masking=True,
         output_length=data_size,
     ).to(device)
 
-    train_dataset = ContainerDataset(size=data_size, seed=4412)
-    test_dataset = ContainerDataset(size=data_size, seed=4412)
+    train_dataset = ContainerDataset(size=data_size,type = 'train',seed=4412)
+    test_dataset = ContainerDataset(size=data_size, type = 'test',seed=4412)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False)  # 启用shuffle
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=False)  # 启用shuffle
+    test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False)
 
     train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
 
