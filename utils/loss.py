@@ -6,14 +6,6 @@ PADDED_Y_VALUE = -1
 DEFAULT_EPS = 1e-8
 
 def binary_listNet(y_pred, y_true, eps=DEFAULT_EPS, padded_value_indicator=PADDED_Y_VALUE):
-    """
-    ListNet loss variant for binary ground truth data introduced in "Learning to Rank: From Pairwise Approach to Listwise Approach".
-    :param y_pred: predictions from the model, shape [batch_size, slate_length]
-    :param y_true: ground truth labels, shape [batch_size, slate_length]
-    :param eps: epsilon value, used for numerical stability
-    :param padded_value_indicator: an indicator of the y_true index containing a padded item, e.g. -1
-    :return: loss value, a torch.Tensor
-    """
     y_pred = y_pred.clone()
     y_true = y_true.clone()
 

@@ -1,36 +1,44 @@
 import torch
 import torch.nn as nn
 from model.pointer_network import PointerNetwork
+from data.container_dataset import ContainerDataset
+from data.tsp import TSPDataset
 from data.tsp_dataset import SortingDataset
+
+
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from evaluate import evaluate_accuracy, evaluate_pmr, evaluate_tau
 from utils.optim import build_optimizer
-from utils.loss import binary_listNet,sorting_loss
+from utils.loss import binary_listNet, sorting_loss
+from utils.show_tsp import show_tsp_data
+
 import math
 import pdb
 
-def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device):
+
+def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr, device):
 
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    # 使用学习率调度器
+
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
 
-    best_acc = 0
+    best_tau = -1.0  # 初始化最佳 tau 值
     best_epoch = 0
     for epoch in range(epochs):
         print(f"Epoch {epoch+1} of {epochs}")
         epoch_loss = 0
-        
+
         for batch in train_dataloader:
             model.train()
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
 
-            #pdb.set_trace()
             loss = criterion(outputs, label)
+            pdb.set_trace()
+
             optimizer.zero_grad()
             loss.backward()
             # 梯度裁剪，防止梯度爆炸
@@ -39,33 +47,32 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
 
             epoch_loss += loss.item()
         print(f"Epoch {epoch+1} loss: {epoch_loss/len(train_dataloader)}")
-        if epoch % 2 and epoch != 0:
-            acc = test_model(model,test_dataloader,data_size)
-            if acc > best_acc:
-                best_acc = acc
+
+        if epoch % 2 == 0 and epoch != 0:  # 每隔一个 epoch 进行测试
+            tau = test_model(model, test_dataloader, data_size)
+            if tau > best_tau:
+                best_tau = tau
                 torch.save(model.state_dict(), f'checkpoint/sort_best_model_for{data_size}.pth')
                 best_epoch = epoch + 1
-                print(f"Best tau at epoch {best_epoch}: {best_acc}...save model.")
-    
-    print(f"Best tau at epoch {best_epoch}: {best_acc}")
+                print(f"Best tau at epoch {best_epoch}: {best_tau:.4f}...save model.")
+            # 在每个评估周期后更新学习率调度器，传入当前的 tau 值
+            scheduler.step(tau)
 
-def test_model(model, test_dataloader,data_size):
+    print(f"Best tau at epoch {best_epoch}: {best_tau:.4f}")
+
+def test_model(model, test_dataloader, data_size):
 
     all_outputs = []
     all_labels = []
 
     print("test model...")
     for batch in test_dataloader:
+        
         model.eval()
         with torch.no_grad():
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
-            
             output, pointer = model(input)
-            criterion = nn.CrossEntropyLoss().to(device)
-            loss = criterion(output, label)
-            pdb.set_trace()
-
             all_outputs.append(pointer)
             all_labels.append(label)
 
@@ -76,22 +83,22 @@ def test_model(model, test_dataloader,data_size):
     acc = evaluate_accuracy(all_outputs, all_labels)
     pmr = evaluate_pmr(all_outputs, all_labels)
     tau = evaluate_tau(all_outputs.tolist(), all_labels.tolist())
-    
+
     print(f"Accuracy: {acc:.4f}")
     print(f"Perfect Match Rate: {pmr:.4f}")
     print(f"Kendall Tau: {tau:.4f}")
     print("--------------------------------")
-    
-    # 返回Kendall Tau作为主要评估指标
+
+    # 返回Kendall Tau作为主要的评估指标
     return tau
 
-def load_model(model,checkpoint_path):
+def load_model(model, checkpoint_path):
     model.load_state_dict(torch.load(checkpoint_path))
     return model
 
 if __name__ == "__main__":
     
-    epochs = 30
+    epochs = 40
     lr = 1e-4
     data_size = 30
     dim = math.ceil(math.log2(data_size))
@@ -115,7 +122,7 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
     test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
-    #train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
+    train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
 
     model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
     test_model(model, test_dataloader, data_size)

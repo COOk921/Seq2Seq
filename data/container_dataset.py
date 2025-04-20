@@ -11,7 +11,7 @@ class ContainerDataset(Dataset):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.data = deal_container_data()
         self.data = self.data.to(device)
-     
+        
         self.num_samples = self.data.shape[0] // size
         
         if self.num_samples * size != self.data.shape[0]:
@@ -33,6 +33,7 @@ class ContainerDataset(Dataset):
         self.input = self.data[:,:,:-1]
         
         self.label = torch.argsort(self.label, dim=-1)
+        print("lens : ", self.data.shape[0])
 
 
     def __len__(self):

@@ -21,7 +21,7 @@ def read_excel(file_path,sheet_name):
 def deal_container_data():
 
     file_path = 'data/containers/DSCH.xlsx'
-    data = read_excel(file_path,sheet_name='Sheet2')
+    data = read_excel(file_path,sheet_name='Sheet1')
     # del 特征
     del_features = ['Time Completed',
                     'Unit Nbr',

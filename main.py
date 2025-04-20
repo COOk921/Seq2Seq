@@ -7,36 +7,39 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 from evaluate import evaluate_accuracy, evaluate_pmr, evaluate_tau
 from utils.optim import build_optimizer
-from utils.loss import binary_listNet,sorting_loss
+from utils.loss import binary_listNet, sorting_loss
 from utils.show_tsp import show_tsp_data
+from utils.align import align_label_start
 
+import time
 import math
 import pdb
 
 
-def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device):
+def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr, device):
 
     criterion = nn.CrossEntropyLoss().to(device)
-
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    # 使用学习率调度器
+
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
 
-    best_acc = 0
+    best_tau = -1.0  # 初始化最佳 tau 值
     best_epoch = 0
+
+    
     for epoch in range(epochs):
         print(f"Epoch {epoch+1} of {epochs}")
         epoch_loss = 0
-        
+
         for batch in train_dataloader:
             model.train()
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
 
-            #pdb.set_trace()
-            loss = criterion(outputs, label)
-            
+            align_label = align_label_start(label, pointers)  # 调整标签顺序       
+            loss = criterion(outputs, align_label)
+
             optimizer.zero_grad()
             loss.backward()
             # 梯度裁剪，防止梯度爆炸
@@ -45,17 +48,20 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
 
             epoch_loss += loss.item()
         print(f"Epoch {epoch+1} loss: {epoch_loss/len(train_dataloader)}")
-        if epoch % 2 and epoch != 0:
-            acc = test_model(model,test_dataloader,data_size)
-            if acc > best_acc:
-                best_acc = acc
+
+        if epoch % 2 == 0 and epoch != 0:  # 每隔一个 epoch 进行测试
+            tau = test_model(model, test_dataloader, data_size)
+            if tau > best_tau:
+                best_tau = tau
                 torch.save(model.state_dict(), f'checkpoint/sort_best_model_for{data_size}.pth')
                 best_epoch = epoch + 1
-                print(f"Best tau at epoch {best_epoch}: {best_acc}...save model.")
-    
-    print(f"Best tau at epoch {best_epoch}: {best_acc}")
+                print(f"Best tau at epoch {best_epoch}: {best_tau:.4f}...save model.")
+            # 在每个评估周期后更新学习率调度器，传入当前的 tau 值
+            scheduler.step(tau)
 
-def test_model(model, test_dataloader,data_size):
+    print(f"Best tau at epoch {best_epoch}: {best_tau:.4f}")
+
+def test_model(model, test_dataloader, data_size):
 
     all_outputs = []
     all_labels = []
@@ -67,11 +73,13 @@ def test_model(model, test_dataloader,data_size):
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             output, pointer = model(input)
-            # show_tsp_data(input[0],pointer[0])
-            # show_tsp_data(input[0],label[0]) 
-            # pdb.set_trace()
+            align_label = align_label_start(label, pointer)
+            
+            #show_tsp_data(input[0], pointer[0],align_label[0])  # 显示第一个样本的预测标签
+            #show_tsp_data(input[0], align_label[0])  # 显示第一个样本的真实标签
+
             all_outputs.append(pointer)
-            all_labels.append(label)
+            all_labels.append(align_label)
 
     all_outputs = torch.cat(all_outputs, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
@@ -80,47 +88,46 @@ def test_model(model, test_dataloader,data_size):
     acc = evaluate_accuracy(all_outputs, all_labels)
     pmr = evaluate_pmr(all_outputs, all_labels)
     tau = evaluate_tau(all_outputs.tolist(), all_labels.tolist())
-    
+
     print(f"Accuracy: {acc:.4f}")
     print(f"Perfect Match Rate: {pmr:.4f}")
     print(f"Kendall Tau: {tau:.4f}")
     print("--------------------------------")
-    
-    # 返回Kendall Tau作为主要评估指标
+
+    # 返回Kendall Tau作为主要的评估指标
     return tau
 
-def load_model(model,checkpoint_path):
+def load_model(model, checkpoint_path):
     model.load_state_dict(torch.load(checkpoint_path))
     return model
 
 if __name__ == "__main__":
-    
-    epochs = 100
-    lr = 1e-6
-    data_size = 10  #15个城市需要排序
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
+
+    epochs = 30
+    lr = 1e-5
+    data_size = 15  # 15个城市需要排序
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = PointerNetwork(
-        elem_dims = 10,      #初始输入维度
+        elem_dims=2,  # 初始输入维度
         embedding_dim=512,  # 增加嵌入维度
-        hidden_dim= 512,   # 增加LSTM的维度
-        lstm_layers=1,    # 增加LSTM层数
-        dropout=0.3,  
+        hidden_dim=512,  # 增加LSTM的维度
+        lstm_layers=1,  # 增加LSTM层数
+        dropout=0.3,
         bidir=False,  # 使用双向LSTM
         masking=True,
         output_length=data_size,
     ).to(device)
 
-    train_dataset = ContainerDataset(size=data_size,type = 'train',seed=4412)
-    test_dataset = ContainerDataset(size=data_size, type = 'test',seed=4412)
+    train_dataset = TSPDataset(size=data_size, type='train', seed=4412)
+    test_dataset = TSPDataset(size=data_size, type='test', seed=4412)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=False)  # 启用shuffle
-    test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-    train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
+    train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr, device)
 
-    # model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
-    # test_model(model, test_dataloader, data_size)
+    #model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
+    #test_model(model, test_dataloader, data_size)
 
     torch.cuda.empty_cache()
-    
