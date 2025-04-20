@@ -13,6 +13,8 @@ def align_label_start(label, pointer):
         torch.Tensor: 调整后的标签，形状为 [B, L]。
     """
     aligned_labels = []
+    err = False
+    
     for b in range(label.size(0)):
         label_b = label[b]
         pointer_b = pointer[b]
@@ -23,10 +25,12 @@ def align_label_start(label, pointer):
             # print(f"Warning: No matching start city found for batch {b}. Skipping alignment.")
             # pdb.set_trace()
             aligned_labels.append(pointer_b)  #  标签存在错误，直接使用预测的标签
+
+            err = True
             continue  
 
         aligned_labels.append(aligned_label_b)
-    return torch.stack(aligned_labels)
+    return torch.stack(aligned_labels), err  
 
 # # 示例
 # label = torch.tensor([[ 0,  5,  4,  2, 11, 10, 13,  7,  9,  6, 12,  8,  1, 14,  3],

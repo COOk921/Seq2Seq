@@ -18,7 +18,8 @@ import pdb
 
 def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr, device):
 
-    criterion = nn.CrossEntropyLoss().to(device)
+    #criterion = nn.CrossEntropyLoss().to(device)
+    criterion = nn.NLLLoss().to(device) 
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
@@ -26,7 +27,6 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
     best_tau = -1.0  # 初始化最佳 tau 值
     best_epoch = 0
 
-    
     for epoch in range(epochs):
         print(f"Epoch {epoch+1} of {epochs}")
         epoch_loss = 0
@@ -37,7 +37,9 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
 
-            align_label = align_label_start(label, pointers)  # 调整标签顺序       
+            align_label,err= align_label_start(label, pointers)  # 调整标签顺序       
+            if err:
+                continue
             loss = criterion(outputs, align_label)
 
             optimizer.zero_grad()
@@ -73,8 +75,9 @@ def test_model(model, test_dataloader, data_size):
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             output, pointer = model(input)
-            align_label = align_label_start(label, pointer)
-            
+            align_label,err = align_label_start(label, pointer)
+            if err:
+                continue
             #show_tsp_data(input[0], pointer[0],align_label[0])  # 显示第一个样本的预测标签
             #show_tsp_data(input[0], align_label[0])  # 显示第一个样本的真实标签
 
@@ -103,17 +106,17 @@ def load_model(model, checkpoint_path):
 
 if __name__ == "__main__":
 
-    epochs = 30
-    lr = 1e-5
+    epochs = 100
+    lr = 1e-3
     data_size = 15  # 15个城市需要排序
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = PointerNetwork(
         elem_dims=2,  # 初始输入维度
-        embedding_dim=512,  # 增加嵌入维度
-        hidden_dim=512,  # 增加LSTM的维度
+        embedding_dim=128,  # 增加嵌入维度
+        hidden_dim=128,  # 增加LSTM的维度
         lstm_layers=1,  # 增加LSTM层数
-        dropout=0.3,
+        dropout=0.2,
         bidir=False,  # 使用双向LSTM
         masking=True,
         output_length=data_size,
@@ -127,7 +130,7 @@ if __name__ == "__main__":
 
     train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr, device)
 
-    #model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
-    #test_model(model, test_dataloader, data_size)
+    model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
+    test_model(model, test_dataloader, data_size)
 
     torch.cuda.empty_cache()

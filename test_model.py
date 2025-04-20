@@ -19,7 +19,8 @@ import pdb
 
 def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr, device):
 
-    criterion = nn.CrossEntropyLoss().to(device)
+    #criterion = nn.CrossEntropyLoss().to(device)
+    criterion = nn.NLLLoss().to(device) 
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
@@ -37,8 +38,6 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
             outputs, pointers = model(input)
 
             loss = criterion(outputs, label)
-            pdb.set_trace()
-
             optimizer.zero_grad()
             loss.backward()
             # 梯度裁剪，防止梯度爆炸
@@ -98,9 +97,9 @@ def load_model(model, checkpoint_path):
 
 if __name__ == "__main__":
     
-    epochs = 40
+    epochs = 30
     lr = 1e-4
-    data_size = 30
+    data_size = 100
     dim = math.ceil(math.log2(data_size))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
@@ -119,13 +118,17 @@ if __name__ == "__main__":
     train_dataset = SortingDataset(size=data_size, num_samples=300,seed=4412)
     test_dataset = SortingDataset(size=data_size, num_samples=10,seed=4412)
 
+    # train_dataset = TSPDataset(size=data_size, type='train', seed=4412)
+    # test_dataset = TSPDataset(size=data_size, type='test', seed=4412)
+
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
     test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
     train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
-
-    model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
-    test_model(model, test_dataloader, data_size)
+    
+    
+    # model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
+    # test_model(model, test_dataloader, data_size)
 
     torch.cuda.empty_cache()
     

@@ -66,17 +66,21 @@ class MAB(nn.Module):
         scores = torch.matmul(Q_proj, K_proj.transpose(-2, -1)) / self.scale
         # 使用 tanh 激活并乘以常数 C
         scores = torch.tanh(scores) * self.C
-
+        
+        
         # 3. 应用掩码
         if mask is not None:
             # mask: [B, L_k] -> [B, 1, 1, L_k] -> [B, h, L_q, L_k] (通过广播)
             mask = mask.unsqueeze(1).unsqueeze(2).expand_as(scores)
             # 将掩码位置的分数设置为一个非常小的值
-            scores = scores.masked_fill(mask, -1e9)
+            scores = scores.masked_fill(mask, -10) # -1e9 是一个很小的值，避免数值不稳定
+
 
         # 4. 计算注意力权重 (Softmax)
         # attn: [B, h, L_q, L_k]
-        attn = F.softmax(scores, dim=-1)
+        #attn = F.softmax(scores, dim=-1)
+        attn = F.log_softmax(scores, dim=-1) 
+        #pdb.set_trace()
 
         # 5. 计算加权和 (输出)
         # output: [B, h, L_q, L_k] * [B, h, L_k, d_v] -> [B, h, L_q, d_v]
@@ -184,8 +188,9 @@ class PointerAttention(nn.Module):
         self.V = Parameter(torch.FloatTensor(hidden_dim), requires_grad=True)
         # 用于掩码的负无穷大值
         self._inf = Parameter(torch.FloatTensor([float('-inf')]), requires_grad=False)
-        # Softmax 层
-        self.soft = nn.Softmax(dim=1) # 对序列长度维度进行 Softmax
+        # 使用 log_Softmax 
+        self.soft = nn.Softmax(dim=1)
+        #self.soft = log_softmax(dim=1) # 对序列长度维度进行 Softmax
 
         # 初始化注意力向量 V
         nn.init.uniform_(self.V, -1, 1)
@@ -225,7 +230,7 @@ class PointerAttention(nn.Module):
         #     att_energy[mask] = self.inf[mask] # 使用预定义的 inf 填充
         # 更健壮的方式是直接使用 masked_fill
         if mask is not None:
-             att_energy = att_energy.masked_fill(mask, float('-inf')) # 直接填充负无穷
+             att_energy = att_energy.masked_fill(mask, -10) # 直接填充负无穷
 
         # 5. 计算注意力权重 (Softmax)
         # alpha: (B, L)
@@ -283,6 +288,7 @@ class PointerDecoder(nn.Module):
         # 不可训练的参数，用于掩码和索引
         self.mask = Parameter(torch.ones(1), requires_grad=False) # 初始掩码值
         self.runner = Parameter(torch.zeros(1), requires_grad=False) # 用于生成索引
+        self.C = 10
 
     def forward(self, embedded_inputs, decoder_input, hidden, context):
         """
@@ -345,10 +351,11 @@ class PointerDecoder(nn.Module):
             attention_mask = (current_step_mask == 0) # True 表示被屏蔽
             # self.att.init_inf(attention_mask.size()) # 确保 inf 张量尺寸正确
             attention_weighted_context, alpha = self.att(h_t, current_context, attention_mask)
-
+            
+            alpha = F.log_softmax(alpha, dim=1) # 对注意力权重进行 log_softmax
             # 结合注意力和隐藏状态得到最终输出隐藏状态
             combined_hidden = torch.cat((attention_weighted_context, h_t), dim=1)
-            output_hidden = torch.tanh(self.hidden_out(combined_hidden))
+            output_hidden = torch.tanh(self.hidden_out(combined_hidden)) *self.C
 
             # 返回新的隐藏状态和注意力权重
             # 注意：原代码返回的是 output_hidden, c_t, alpha。但 LSTM 步通常只更新 h 和 c。
@@ -378,6 +385,7 @@ class PointerDecoder(nn.Module):
                 V=current_context,
                 mask=mha_mask # True 表示要屏蔽的位置
             )
+
             # 提取注意力权重并调整形状
             # alpha_mha: [B, 1, 1, L] -> [B, L]
             alpha = alpha_mha.squeeze(1).squeeze(1)
@@ -391,18 +399,18 @@ class PointerDecoder(nn.Module):
         for t in range(current_output_length):
             # --- 选择解码方式 ---
             # 方式一：使用 LSTM + Attention
-            # h_t, c_t, step_output_probs = step_lstm(current_decoder_input, current_hidden, context, current_mask)
-            # current_hidden = (h_t, c_t) # 更新隐藏状态
+            h_t, c_t, step_output_probs = step_lstm(current_decoder_input, current_hidden, context, current_mask)
+            current_hidden = (h_t, c_t) # 更新隐藏状态
 
             # 方式二：使用 MHA (Multihead Attention Block) - 原代码实际使用的
-            step_output_probs = step_mha(current_decoder_input, context, current_mask) # MHA 的输入是 current_decoder_input
-          
+            #step_output_probs = step_mha(current_decoder_input, context, current_mask) # MHA 的输入是 current_decoder_input
+           
 
             # --- 处理当前步的输出 ---
             # 将已被屏蔽的位置的概率设置为 0 (或负无穷，取决于后续操作)
             # masked_outs: [B, L]
-            # masked_outs = step_output_probs.masked_fill(current_mask == 0, -1e9) # 用负无穷填充，配合 max
-            masked_outs = step_output_probs * current_mask # 直接乘以掩码 (0 或 1)
+            masked_outs = step_output_probs.masked_fill(current_mask == 0, -1e9) # 用负无穷填充，配合 max
+            #masked_outs = step_output_probs * current_mask # 直接乘以掩码 (0 或 1)
 
             # 找到概率最大的索引
             # max_probs: [B], indices: [B]
@@ -429,34 +437,17 @@ class PointerDecoder(nn.Module):
             no_select_mask_bool = (current_mask == 1).unsqueeze(2).expand(-1, -1, self.embedding_dim).bool()
             
             
-            # 下一个时刻t的嵌入
-            next_t_embeds = embedded_inputs[~no_select_mask_bool].view(batch_size,-1, self.embedding_dim)
-        
+            # 下一个时刻t的嵌入 True表示选中,False表示未选中
+            t_embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1, self.embedding_dim).bool()
+            next_t_embeds = embedded_inputs[t_embedding_mask].view(batch_size, self.embedding_dim)
+
+            # 未选择节点的嵌入 
             no_selected_embeds = embedded_inputs[no_select_mask_bool.data].view(batch_size, -1, self.embedding_dim)
             # 最大池化
             if no_selected_embeds.size(1) > 0:
                 not_select_embed = F.max_pool1d(no_selected_embeds.transpose(1,2),kernel_size=no_selected_embeds.size(1)).squeeze(-1)
             else:
                 not_select_embed = torch.zeros(batch_size, self.embedding_dim).to(embedded_inputs.device)
-            
-            
-            # no_selected_embeds = []
-            # for b in range(batch_size):
-            #     batch_no_select_mask = (current_mask[b] == 1)
-            #     if batch_no_select_mask.any():
-            #         # no_selected_emd_b: [num_unselected, D_emb]
-            #         no_selected_emd_b = embedded_inputs[b][batch_no_select_mask]
-            #         # 使用最大池化获取代表性嵌入
-            #         # pooled_embed_b: [D_emb]
-            #         pooled_embed_b = F.max_pool1d(no_selected_emd_b.unsqueeze(0).transpose(1, 2),
-            #                                        kernel_size=no_selected_emd_b.size(0)).squeeze()
-            #         no_selected_embeds.append(pooled_embed_b)
-            #     else:
-            #         # 如果所有节点都被选中，则使用零向量
-            #         no_selected_embeds.append(torch.zeros(self.embedding_dim, device=embedded_inputs.device))
-            # # not_select_embed: [B, D_emb]
-            # not_select_embed = torch.stack(no_selected_embeds, dim=0)
-            
            
             # 更新解码器输入为未选中节点的最大池化嵌入
             current_decoder_input = not_select_embed
@@ -527,11 +518,11 @@ class PointerNetwork(nn.Module):
         # --- Encoder ---
         # 注意：原代码在 forward 中直接使用了 ISAB 或 MAB，没有使用 PointerEncoder
         # 如果需要使用 LSTM Encoder，取消下面的注释
-        # self.encoder = PointerEncoder(embedding_dim,
-        #                               hidden_dim,
-        #                               lstm_layers,
-        #                               dropout,
-        #                               bidir)
+        self.encoder = PointerEncoder(embedding_dim,
+                                      hidden_dim,
+                                      lstm_layers,
+                                      dropout,
+                                      bidir)
 
         # --- Decoder ---
         self.decoder = PointerDecoder(embedding_dim, hidden_dim,
@@ -570,13 +561,13 @@ class PointerNetwork(nn.Module):
         encoder_outputs = self.ISAB(embedded_inputs) # [B, L, D_hid]
 
         # 选项 B: 使用 MAB (MultiheadAttention)
-        # encoder_outputs, _ = self.MAB(
-        #     query=embedded_inputs,
-        #     key=embedded_inputs,
-        #     value=embedded_inputs,
-        #     need_weights=False,
-        #     attn_mask=None # 根据需要添加 mask
-        # ) # [B, L, D_emb] -> [B, L, D_hid] (如果 D_emb == D_hid)
+        encoder_outputs, _ = self.MAB(
+            query=embedded_inputs,
+            key=embedded_inputs,
+            value=embedded_inputs,
+            need_weights=False,
+            attn_mask=None # 根据需要添加 mask
+        ) # [B, L, D_emb] -> [B, L, D_hid] (如果 D_emb == D_hid)
 
         # 选项 C: 使用 LSTM Encoder (如果定义了 self.encoder)
         # encoder_hidden_init = self.encoder.init_hidden(embedded_inputs)
@@ -634,4 +625,4 @@ class PointerNetwork(nn.Module):
         )
 
 
-        return outputs, pointers
+        return outputs.permute(0, 2, 1), pointers

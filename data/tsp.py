@@ -16,7 +16,7 @@ class TSPDataset(Dataset):
         
         self.data = load_tsp_data()
         self.input,self.label = self.data['input'],self.data['label']
-        self.length = self.input.shape[0]
+        self.length = length #self.input.shape[0]
 
         # 对input进行归一化
         self.input = self.input / 100
