@@ -6,6 +6,7 @@ import numpy as np
 from torch.nn import Parameter
 import torch.nn.functional as F
 from model.ISAB import ISAB
+from model.position import PositionalEncoding
 
 # 假设这些模块在指定的路径下
 # from utils.grouping import grouping
@@ -332,7 +333,9 @@ class PointerDecoder(nn.Module):
             :return: tuple: (下一隐藏状态 h_t [B, D_hid], 下一细胞状态 c_t [B, D_hid], 注意力权重 alpha [B, L])
             """
             h_prev, c_prev = current_hidden
-
+            h_prev = h_prev.to(x.dtype)
+            c_prev = c_prev.to(x.dtype)
+            
             # 计算 LSTM 门控单元
             gates = self.input_to_hidden(x) + self.hidden_to_hidden(h_prev)
             i, f, g, o = gates.chunk(4, 1) # input, forget, cell, output gates
@@ -450,7 +453,7 @@ class PointerDecoder(nn.Module):
                 not_select_embed = torch.zeros(batch_size, self.embedding_dim).to(embedded_inputs.device)
            
             # 更新解码器输入为未选中节点的最大池化嵌入
-            current_decoder_input = not_select_embed
+            current_decoder_input =  next_t_embeds
 
 
             # 存储当前步的结果
@@ -488,7 +491,10 @@ class PointerNetwork(nn.Module):
                  masking=True,     # Decoder 是否屏蔽已选项
                  output_length=None, # 固定输出长度 (否则等于输入长度)
                  embedding_by_dict=False, # 是否使用 Embedding 字典 (针对离散输入)
-                 embedding_by_dict_size=None): # Embedding 字典大小
+                 embedding_by_dict_size=None,# Embedding 字典大小
+                 max_seq_len=100
+                 
+                 ): 
         """
         初始化 Pointer Network 模型。
         参数含义见类注释。
@@ -508,12 +514,15 @@ class PointerNetwork(nn.Module):
 
         # --- Embedding 层 ---
         if embedding_by_dict:
-            # 如果输入是索引，使用 nn.Embedding
             assert embedding_by_dict_size is not None, "embedding_by_dict_size must be provided if embedding_by_dict is True"
             self.embedding = nn.Embedding(embedding_by_dict_size, embedding_dim)
         else:
-            # 如果输入是连续向量，使用 nn.Linear
             self.embedding = nn.Linear(elem_dims, embedding_dim)
+
+
+        # --- 位置编码层 ---
+        # **** 实例化 PositionalEncoding ****
+        self.pos_encoder = PositionalEncoding(embedding_dim, dropout, max_len=max_seq_len)
 
         # --- Encoder ---
         # 注意：原代码在 forward 中直接使用了 ISAB 或 MAB，没有使用 PointerEncoder
@@ -550,15 +559,19 @@ class PointerNetwork(nn.Module):
             # 输入是索引 [B, L]
             embedded_inputs = self.embedding(inputs.long()) # [B, L, D_emb]
         else:
-            # 输入是向量 [B, L, D_elem] -> [B * L, D_elem]
             input_flat = inputs.view(batch_size * input_length, -1)
-            # embedded_inputs: [B * L, D_emb] -> [B, L, D_emb]
             embedded_inputs = self.embedding(input_flat.float()).view(batch_size, input_length, -1)
+
+        # --- Add Positional Encoding ---
+        #embedded_coords: [B, L, embedding_dim] -> embedded_inputs: [B, L, embedding_dim]
+        # embedded_inputs = self.pos_encoder(embedded_inputs)
+
+
 
         # --- 2. Encoder (或替代方案) ---
         # 原代码直接使用 ISAB 或 MAB 作为编码器输出
         # 选项 A: 使用 ISAB (假设已定义)
-        encoder_outputs = self.ISAB(embedded_inputs) # [B, L, D_hid]
+        #encoder_outputs = self.ISAB(embedded_inputs) # [B, L, D_hid]
 
         # 选项 B: 使用 MAB (MultiheadAttention)
         encoder_outputs, _ = self.MAB(
@@ -566,7 +579,7 @@ class PointerNetwork(nn.Module):
             key=embedded_inputs,
             value=embedded_inputs,
             need_weights=False,
-            attn_mask=None # 根据需要添加 mask
+            attn_mask=None 
         ) # [B, L, D_emb] -> [B, L, D_hid] (如果 D_emb == D_hid)
 
         # 选项 C: 使用 LSTM Encoder (如果定义了 self.encoder)
@@ -593,6 +606,7 @@ class PointerNetwork(nn.Module):
         # 初始化 Decoder 的隐藏状态 (对于 MHA Decoder，这更像是一个初始查询)
         # 原代码使用随机初始化的隐藏状态，这里遵循
         decoder_hidden_dim = self.decoder.hidden_dim
+        
         device = inputs.device
         dtype = inputs.dtype
         # 注意：如果 Decoder 使用 LSTM，需要 (h0, c0)
@@ -625,4 +639,4 @@ class PointerNetwork(nn.Module):
         )
 
 
-        return outputs.permute(0, 2, 1), pointers
+        return outputs.permute(0, 2, 1), pointers  #

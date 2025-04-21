@@ -44,32 +44,38 @@ class SortingDataset(Dataset):
 
 
 
+class SortDataset2(Dataset):
+    def __init__(self, num_samples, sequence_length):
+        self.num_samples = num_samples
+        self.sequence_length = sequence_length
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        # 生成随机输入序列
+        input_seq = torch.rand(self.sequence_length, 1) # Shape: [L, 1]
+        # 生成排序后的索引标签
+        # argsort 返回的是从小到大排序的原始索引
+        label_seq = torch.argsort(input_seq.squeeze(-1)) # Shape: [L]
+
+        input_seq = input_seq.to(self.device)
+        label_seq = label_seq.to(self.device)
+
+        return {'input': input_seq, 'label': label_seq}
 
 def main():
     
-    dataset = SortingDataset(size=5, num_samples=1000)
-    
-    all_inputs = []
-    all_labels = []
-    
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-    for batch in dataloader:
-        input = batch['input']   #[B,L,1]
-        label = batch['label']   #[B,L,1]
-        all_inputs.append(input)
-        all_labels.append(label)
-    
-    all_inputs = torch.cat(all_inputs, dim=0)
-    all_labels = torch.cat(all_labels, dim=0)
-  
-    data = {
-        'inputs': all_inputs,
-        'labels': all_labels
-    }
-    
-    # 保存数据
-    torch.save(data, 'data/sorting_dataset.pt')
-    print("数据已保存到 data/sorting_dataset.pt")
+    train_dataset = SortDataset2(num_samples=10000, sequence_length=15)
+    test_dataset = SortDataset2(num_samples=1000, sequence_length=15)
+    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    for batch in train_dataloader:
+        input = batch['input']
+        label = batch['label']
+        print(input.shape, label.shape)
+        break
 
 if __name__ == "__main__":
     main() 

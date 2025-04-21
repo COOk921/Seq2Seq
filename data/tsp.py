@@ -10,7 +10,7 @@ def load_tsp_data():
     return data
 
 class TSPDataset(Dataset):
-    def __init__(self, size=15, length = 1000, type = 'train',seed=1234):
+    def __init__(self, size=15, length = 3000, type = 'train',seed=1234):
         self.size = size
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         

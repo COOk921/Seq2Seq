@@ -3,8 +3,8 @@ import torch.nn as nn
 from model.pointer_network import PointerNetwork
 from data.container_dataset import ContainerDataset
 from data.tsp import TSPDataset
-from data.tsp_dataset import SortingDataset
-
+from data.tsp_dataset import SortingDataset,SortDataset2
+from utils.align import align_label_start
 
 from torch.utils.data import DataLoader
 import torch.optim as optim
@@ -36,8 +36,11 @@ def train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             outputs, pointers = model(input)
-
-            loss = criterion(outputs, label)
+            align_label,err= align_label_start(label, pointers)  # 调整标签顺序 
+            if err:
+                continue
+            loss = criterion(outputs, align_label)
+            # pdb.set_trace()
             optimizer.zero_grad()
             loss.backward()
             # 梯度裁剪，防止梯度爆炸
@@ -72,8 +75,13 @@ def test_model(model, test_dataloader, data_size):
             input = batch['input']
             label = batch['label'].squeeze(-1).long()
             output, pointer = model(input)
+
+            align_label,err= align_label_start(label, pointer)  # 调整标签顺序 
+            if err:
+                continue
+            pdb.set_trace()
             all_outputs.append(pointer)
-            all_labels.append(label)
+            all_labels.append(align_label)
 
     all_outputs = torch.cat(all_outputs, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
@@ -97,17 +105,17 @@ def load_model(model, checkpoint_path):
 
 if __name__ == "__main__":
     
-    epochs = 30
+    epochs = 50
     lr = 1e-4
-    data_size = 100
+    data_size = 10
     dim = math.ceil(math.log2(data_size))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
     print(f"data_size: {data_size}, dim: {dim}")
     model = PointerNetwork(
-        elem_dims = dim,      #初始输入维度
-        embedding_dim=512,  # 增加嵌入维度
-        hidden_dim= 512,   # 增加LSTM的维度
+        elem_dims = 10,      #初始输入维度
+        embedding_dim=256,  # 增加嵌入维度
+        hidden_dim= 256,   # 增加LSTM的维度
         lstm_layers=1,    # 增加LSTM层数
         dropout=0.2,  
         bidir=False,  # 使用双向LSTM
@@ -115,20 +123,23 @@ if __name__ == "__main__":
         output_length=data_size,
     ).to(device)
 
-    train_dataset = SortingDataset(size=data_size, num_samples=300,seed=4412)
-    test_dataset = SortingDataset(size=data_size, num_samples=10,seed=4412)
+    # train_dataset = SortingDataset(size=data_size, num_samples=300,seed=4412)
+    # test_dataset = SortingDataset(size=data_size, num_samples=10,seed=4412)
+    # train_dataset = SortDataset2(num_samples=1000, sequence_length=data_size)
+    # test_dataset = SortDataset2(num_samples=100, sequence_length=data_size)
+    
+    train_dataset = ContainerDataset(size = data_size,type='train', )
+    test_dataset = ContainerDataset(size = data_size, type='test', )
+ 
 
-    # train_dataset = TSPDataset(size=data_size, type='train', seed=4412)
-    # test_dataset = TSPDataset(size=data_size, type='test', seed=4412)
+    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)  # 启用shuffle
+    test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=True)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 启用shuffle
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
-
-    train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
+    #train_model(model, train_dataloader, test_dataloader, data_size, epochs, lr,device) 
     
     
-    # model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
-    # test_model(model, test_dataloader, data_size)
+    model = load_model(model,f'checkpoint/sort_best_model_for{data_size}.pth')
+    test_model(model, test_dataloader, data_size)
 
     torch.cuda.empty_cache()
     

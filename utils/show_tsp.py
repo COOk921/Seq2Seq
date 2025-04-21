@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from utils.tourLen import calculate_tsp_tour_length
+
 def show_tsp_data(input, predicted_label, true_label=None):
     """
     绘制 TSP 数据，包括城市分布和预测/真实路径。
@@ -12,6 +14,13 @@ def show_tsp_data(input, predicted_label, true_label=None):
         true_label (torch.Tensor, 可选): 形状为 [L] 的张量，表示真实的城市访问顺序。
                                       如果提供，则绘制真实路径；否则只绘制预测路径。
     """
+
+    dis1 = calculate_tsp_tour_length(input.unsqueeze(0), predicted_label.unsqueeze(0))
+    dis2 = calculate_tsp_tour_length(input.unsqueeze(0), true_label.unsqueeze(0))
+
+    # print(f"predicted distance: {dis1.item()}")
+    # print(f"true distance: {dis2.item()}")
+
     cities = input.cpu().numpy()
     predicted_route = predicted_label.cpu().numpy()
 
@@ -25,6 +34,7 @@ def show_tsp_data(input, predicted_label, true_label=None):
     plt.xlabel('X')
     plt.ylabel('Y')
     plt.grid(True)
+    plt.title('Tour length: {:.2f}'.format(dis1.item()))
 
     # 绘制预测路径
     predicted_route_cities = cities[predicted_route]
@@ -41,7 +51,7 @@ def show_tsp_data(input, predicted_label, true_label=None):
         true_route_cities = cities[true_route]
         plt.plot(true_route_cities[:, 0], true_route_cities[:, 1], 'b-', linewidth=2, label='True Route')
         plt.scatter(true_route_cities[0, 0], true_route_cities[0, 1], c='green', s=350, marker='*', label='Start')
-        
+        plt.title('Tour length: {:.2f}'.format(dis2.item()))
         plt.xlabel('X')
         plt.ylabel('Y')
         plt.legend()

@@ -21,12 +21,16 @@ def read_excel(file_path,sheet_name):
 def deal_container_data():
 
     file_path = 'data/containers/DSCH.xlsx'
-    data = read_excel(file_path,sheet_name='Sheet1')
+    #file_path = 'data/containers/data.xlsx'
+    data = read_excel(file_path,sheet_name='Sheet3')
     # del 特征
     del_features = ['Time Completed',
                     'Unit Nbr',
                     'From Position',
                     'To Position',
+                    'Length',
+                    'Height',
+                    'Width'
                     ]
     
     # one-hot编码的特征
@@ -36,6 +40,9 @@ def deal_container_data():
                         'Unit POD', 
                         'Unit Type Length',
                         'WI POW',
+                        'Put CHE Name',
+                        'yard',
+                        "pos1"
                         ]
 
     # 连续特征
@@ -44,6 +51,9 @@ def deal_container_data():
 
     # 对one-hot编码的特征进行one-hot编码
     for feature in one_hot_features:
+        if feature not in data.columns:
+            print(f"Warning: {feature} not in data columns")
+            continue
         data[feature] = data[feature].astype('category')
         data[feature] = data[feature].cat.codes
 
@@ -57,6 +67,8 @@ def deal_container_data():
 
     # 删除del_features中的特征
     data = data.drop(del_features, axis=1)
+    print(data.columns)
+    print(data.head(3))
     data = torch.tensor(data.values)
 
     return data
